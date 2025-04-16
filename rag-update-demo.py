@@ -1031,11 +1031,52 @@ def run_product_replacement_demo():
     print("\nDemo complete!")
 
 
+def print_debug_info():
+    """Print debugging information to help diagnose issues."""
+    print("\n=== Debug Information ===")
+    
+    # Check OpenAI API key
+    if "OPENAI_API_KEY" in os.environ:
+        key = os.environ["OPENAI_API_KEY"]
+        # Only show the first 5 and last 5 characters of the key
+        if len(key) > 12:
+            masked_key = f"{key[:5]}...{key[-5:]}"
+        else:
+            masked_key = "***SET BUT TOO SHORT***"
+        print(f"OPENAI_API_KEY: {masked_key} (length: {len(key)})")
+    else:
+        print("OPENAI_API_KEY=unset")
+    
+    # Check Ollama availability
+    try:
+        response = requests.get(f"{LLMConfig.OLLAMA_BASE_URL}/api/tags", timeout=2)
+        print(f"Ollama Status: Available (HTTP {response.status_code})")
+        try:
+            models = response.json().get("models", [])
+            if models:
+                model_names = [model.get("name") for model in models]
+                print(f"Ollama Models: {', '.join(model_names)}")
+            else:
+                print("Ollama Models: None found")
+        except Exception:
+            print("Ollama Models: Error parsing response")
+    except Exception as e:
+        print(f"Ollama Status: Not available ({str(e)})")
+    
+    print("========================")
+
 if __name__ == "__main__":
     try:
+        # Print debug info at the start
+        print_debug_info()
+        
+        # Run the demo
         run_product_replacement_demo()
     except Exception as e:
         logger.error(f"Error: {str(e)}")
+        
+        # Print debug info again on error
+        print_debug_info()
         
         error_msg = str(e).lower()
         if "quota" in error_msg or "insufficient_quota" in error_msg or "429" in error_msg:
