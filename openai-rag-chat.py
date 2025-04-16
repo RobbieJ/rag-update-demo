@@ -251,9 +251,12 @@ class ProductChatAssistant(cmd.Cmd):
     
     intro = """
 ==============================================
-    Product Information Chat Assistant
+    Product Sales Assistant
 ==============================================
-Ask questions about our products to get information.
+Welcome! I'm your virtual sales assistant.
+Ask me anything about our products, features, specifications, 
+compatibility, or how to set them up.
+
 Type 'help' for commands, 'exit' to quit.
 """
     
@@ -416,7 +419,7 @@ Type 'help' for commands, 'exit' to quit.
             context = self._generate_context_string()
             
             # Create the prompt
-            prompt = f"""You are a product information assistant. Answer the following question based only on the context provided.
+            prompt = f"""Answer the following question based only on the context provided.
 
 Context information:
 {context}
@@ -429,8 +432,19 @@ Important:
 - Keep your answer concise and focused on the question.
 """
             
-            # Generate response
-            system_message = "You are a product information assistant."
+            # Generate response with an enhanced system message
+            system_message = """You are a helpful, enthusiastic sales assistant providing product information.
+
+As a product information specialist:
+- Format your responses for easy readability with appropriate spacing and structure
+- Use bullet points for lists of features or specifications
+- Highlight key selling points with bold formatting using markdown (**key point**)
+- Organize information into clear sections when appropriate
+- Be conversational, friendly, and professional
+- When addressing product replacements, express enthusiasm about the newer product
+
+Remember to only use information from the context provided. Do not make up information."""
+            
             answer = self.llm.generate_response(prompt, system_message)
             
             print(f"\nAssistant: {answer}")
@@ -449,21 +463,36 @@ Important:
         # Use the LLM name in the prefix
         prefix = f"[{self.llm.get_display_name()}]"
         
-        print(f"\n{prefix} Current Product Information:")
-        print("===========================")
+        print(f"\n{prefix} Current Product Availability:")
+        print("=============================")
         
         if not self.product_info.get("products"):
-            print("No product information available")
+            print("No product information available at this time.")
+            print("Please check back later for our exciting product lineup!")
             return
+        
+        active_products = []
+        retired_products = []
         
         for product, info in self.product_info["products"].items():
             status = info.get("status", "unknown")
-            status_str = "ACTIVE" if status == "active" else "RETIRED"
-            print(f"{product}: {status_str}")
+            if status == "active":
+                active_products.append(product)
+            elif status == "retired":
+                retired_products.append((product, self.product_info["replacements"].get(product)))
+        
+        if active_products:
+            print("Currently Available Products:")
+            for product in active_products:
+                print(f"✓ {product}")
             
-            if status == "retired" and product in self.product_info.get("replacements", {}):
-                replacement = self.product_info["replacements"][product]
-                print(f"  → Replaced by: {replacement}")
+        if retired_products:
+            print("\nRetired Products:")
+            for product, replacement in retired_products:
+                if replacement:
+                    print(f"✗ {product} - Upgraded to our new and improved {replacement}!")
+                else:
+                    print(f"✗ {product} - No longer available")
     
     def do_help(self, arg):
         """Display help information."""
@@ -471,13 +500,16 @@ Important:
         prefix = f"[{self.llm.get_display_name()}]"
         
         print(f"\n{prefix} Available commands:")
-        print("  status    - Show current product information status")
-        print("  exit/quit - Exit the chat interface")
+        print("  status    - Show current product availability")
+        print("  exit/quit - End the conversation")
         print("\nSample questions you can ask:")
-        print("  What are the specifications of ProductA?")
+        print("  What are the key features of ProductB?")
+        print("  How does ProductB compare to ProductA?")
         print("  Is ProductAccessory compatible with ProductB?")
-        print("  How do I set up ProductB?")
-        print("  What products do you offer?")
+        print("  What makes ProductB better than its predecessor?")
+        print("  How do I set up my new ProductB?")
+        print("  What products would you recommend for my needs?")
+        print("  Which products are currently available?")
 
 
 def run_chat_interface(db_path="./demo_vector_db"):
