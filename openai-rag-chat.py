@@ -10,6 +10,16 @@ This script provides a text-based chat interface that:
 Requirements:
 - openai (pip install openai) for OpenAI API
 - requests (pip install requests) for Ollama API
+
+Usage:
+python openai-rag-chat.py [options]
+
+Options:
+  --vector-db PATH, -v PATH   Specify custom vector database path (default: ./demo_vector_db)
+  --debug, -d                 Enable additional debug output
+  --yes, -y                   Auto-confirm all prompts (non-interactive mode)
+  --delay SECONDS             Specify delay for product update simulation (default: random 15-30s)
+  --no-update                 Disable product update simulation
 """
 
 import os
@@ -19,7 +29,13 @@ import threading
 import cmd
 import random
 import requests
+import logging
+import argparse
 from datetime import datetime
+
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Try to import OpenAI
 try:
@@ -45,6 +61,7 @@ class LLMProvider:
     
     def __init__(self):
         self.name = "Base LLM"
+        self.model = "Unknown"
     
     def validate(self):
         """Validate the LLM provider configuration"""
@@ -53,6 +70,10 @@ class LLMProvider:
     def generate_response(self, prompt, system_message="You are a helpful assistant"):
         """Generate a response using the LLM"""
         raise NotImplementedError("Subclasses must implement this method")
+        
+    def get_display_name(self):
+        """Get a display name for the prompt"""
+        return f"{self.name} - {self.model}"
 
 
 class OpenAIProvider(LLMProvider):
@@ -67,11 +88,11 @@ class OpenAIProvider(LLMProvider):
     def validate(self):
         """Validate OpenAI API key and connection"""
         if not has_openai:
-            print("OpenAI package not installed.")
+            logger.warning("OpenAI package not installed.")
             return False
             
         if "OPENAI_API_KEY" not in os.environ:
-            print("OPENAI_API_KEY environment variable not set.")
+            logger.warning("OPENAI_API_KEY environment variable not set.")
             return False
             
         try:
@@ -90,11 +111,20 @@ class OpenAIProvider(LLMProvider):
                 temperature=0
             )
             
-            print("OpenAI API key validated successfully.")
+            # Check response content
+            response_text = test_response.choices[0].message.content.strip().lower()
+            if "valid" not in response_text and "api key" not in response_text:
+                logger.warning(f"OpenAI returned unexpected response: {response_text}")
+                
+            logger.info("OpenAI API key validated successfully.")
             return True
             
         except Exception as e:
-            print(f"Error validating OpenAI API key: {str(e)}")
+            error_msg = str(e).lower()
+            if "quota" in error_msg or "insufficient_quota" in error_msg or "429" in error_msg:
+                logger.error("OpenAI API quota exceeded or rate limit hit. Please check your billing details.")
+            else:
+                logger.warning(f"Error validating OpenAI API key: {str(e)}")
             return False
     
     def generate_response(self, prompt, system_message="You are a helpful assistant"):
@@ -113,7 +143,11 @@ class OpenAIProvider(LLMProvider):
             return response.choices[0].message.content.strip()
             
         except Exception as e:
-            raise Exception(f"OpenAI API error: {str(e)}")
+            error_msg = str(e).lower()
+            if "quota" in error_msg or "insufficient_quota" in error_msg or "429" in error_msg:
+                raise Exception(f"OpenAI API quota exceeded. Check your billing details at https://platform.openai.com/account/billing. Error: {str(e)}")
+            else:
+                raise Exception(f"OpenAI API error: {str(e)}")
 
 
 class OllamaProvider(LLMProvider):
@@ -129,10 +163,11 @@ class OllamaProvider(LLMProvider):
         """Validate Ollama server connection"""
         try:
             # Check if Ollama server is running and model is available
-            response = requests.get(f"{self.base_url}/api/tags")
+            logger.info(f"Checking Ollama server at {self.base_url}")
+            response = requests.get(f"{self.base_url}/api/tags", timeout=5)
             
             if response.status_code != 200:
-                print(f"Ollama server returned status code {response.status_code}")
+                logger.warning(f"Ollama server returned status code {response.status_code}")
                 return False
                 
             # Check if our model is available
@@ -140,20 +175,20 @@ class OllamaProvider(LLMProvider):
             model_names = [model.get("name") for model in available_models]
             
             if not model_names:
-                print("No models found on Ollama server")
+                logger.warning("No models found on Ollama server")
                 return False
                 
             if self.model not in model_names:
-                print(f"Model {self.model} not found. Available models: {', '.join(model_names)}")
-                print(f"Using {model_names[0]} instead.")
+                logger.warning(f"Model {self.model} not found. Available models: {', '.join(model_names)}")
+                logger.info(f"Using {model_names[0]} instead.")
                 self.model = model_names[0]
             
-            print(f"Ollama server validated successfully with model: {self.model}")
+            logger.info(f"Ollama server validated successfully with model: {self.model}")
             return True
             
         except requests.exceptions.RequestException as e:
-            print(f"Error connecting to Ollama server: {str(e)}")
-            print("Make sure Ollama is running locally on port 11434")
+            logger.warning(f"Error connecting to Ollama server: {str(e)}")
+            logger.warning("Make sure Ollama is running locally on port 11434")
             return False
     
     def generate_response(self, prompt, system_message="You are a helpful assistant"):
@@ -166,7 +201,8 @@ class OllamaProvider(LLMProvider):
                 "stream": False
             }
             
-            response = requests.post(f"{self.base_url}/api/generate", json=payload)
+            logger.debug(f"Sending request to Ollama with model: {self.model}")
+            response = requests.post(f"{self.base_url}/api/generate", json=payload, timeout=30)
             
             if response.status_code != 200:
                 raise Exception(f"Ollama server returned status code {response.status_code}")
@@ -175,6 +211,7 @@ class OllamaProvider(LLMProvider):
             return result.get("response", "").strip()
             
         except Exception as e:
+            logger.error(f"Ollama API error: {str(e)}")
             raise Exception(f"Ollama API error: {str(e)}")
 
 
@@ -184,18 +221,28 @@ class LLMFactory:
     @staticmethod
     def create_llm():
         """Create and return an LLM provider based on availability"""
+        logger.info("Initializing LLM provider")
+        
         # Try OpenAI first
+        logger.info("Checking OpenAI availability...")
         openai_provider = OpenAIProvider()
         if openai_provider.validate():
             return openai_provider
-            
+        
         # Then try Ollama
+        logger.info("Checking Ollama availability...")
         ollama_provider = OllamaProvider()
         if ollama_provider.validate():
             return ollama_provider
             
         # If both fail, raise an exception
-        raise Exception("No LLM provider available. Please configure either OpenAI API key or start Ollama server.")
+        error_message = """
+No LLM provider available. Please configure one of the following:
+1. Set OPENAI_API_KEY environment variable with a valid API key
+2. Start a local Ollama server (http://localhost:11434) with at least one model installed
+"""
+        logger.error(error_message)
+        raise Exception(error_message)
 
 
 class ProductChatAssistant(cmd.Cmd):
@@ -217,16 +264,20 @@ Type 'help' for commands, 'exit' to quit.
         
         self.db_path = db_path
         self.relationships_file = os.path.join(db_path, "product_relationships.json")
+        logger.info(f"Using vector database path: {db_path}")
+        print(f"Using vector database path: {db_path}")
         
         # Initialize LLM provider
         try:
             self.llm = LLMFactory.create_llm()
-            print(f"Using {self.llm.name} for response generation")
-            self.prompt = f"\n[{self.llm.name}] You: "
+            logger.info(f"Using {self.llm.name} with model {self.llm.model} for response generation")
+            print(f"Using {self.llm.name} with model {self.llm.model} for response generation")
+            self.prompt = f"\n[{self.llm.get_display_name()}] You: "
         except Exception as e:
+            logger.error(f"Error initializing LLM: {str(e)}")
             print(f"Error initializing LLM: {str(e)}")
             print("Exiting...")
-            exit(1)
+            raise Exception(f"Failed to initialize LLM provider: {str(e)}")
         
         # Load product info
         self._load_product_info()
@@ -263,10 +314,19 @@ Type 'help' for commands, 'exit' to quit.
     def _load_product_info(self):
         """Load product information from the file."""
         if os.path.exists(self.relationships_file):
-            with open(self.relationships_file, 'r') as f:
-                self.product_info = json.load(f)
-            print(f"Loaded information for {len(self.product_info.get('products', {}))} products")
+            logger.info(f"Loading product information from {self.relationships_file}")
+            try:
+                with open(self.relationships_file, 'r') as f:
+                    self.product_info = json.load(f)
+                product_count = len(self.product_info.get('products', {}))
+                logger.info(f"Loaded information for {product_count} products")
+                print(f"Loaded information for {product_count} products")
+            except json.JSONDecodeError as e:
+                logger.error(f"Error parsing product information file: {str(e)}")
+                print(f"Error parsing product information file: {str(e)}")
+                self.product_info = {"products": {}, "replacements": {}, "history": []}
         else:
+            logger.warning(f"Product information file not found: {self.relationships_file}")
             self.product_info = {"products": {}, "replacements": {}, "history": []}
             print("No product information found")
     
@@ -284,7 +344,7 @@ Type 'help' for commands, 'exit' to quit.
                     self._load_product_info()
                     
                     # Use the LLM name in the prefix
-                    prefix = f"[{self.llm.name}]"
+                    prefix = f"[{self.llm.get_display_name()}]"
                     print(f"\n\n{prefix} [System] Product information has been updated!")
                     
                     # Print a summary of changes
@@ -388,7 +448,7 @@ Important:
     def do_status(self, arg):
         """Show the current status of product information."""
         # Use the LLM name in the prefix
-        prefix = f"[{self.llm.name}]"
+        prefix = f"[{self.llm.get_display_name()}]"
         
         print(f"\n{prefix} Current Product Information:")
         print("===========================")
@@ -409,7 +469,7 @@ Important:
     def do_help(self, arg):
         """Display help information."""
         # Use the LLM name in the prefix
-        prefix = f"[{self.llm.name}]"
+        prefix = f"[{self.llm.get_display_name()}]"
         
         print(f"\n{prefix} Available commands:")
         print("  status    - Show current product information status")
@@ -484,28 +544,142 @@ def run_chat_interface():
         print("Please check your environment setup and try again.")
 
 
-def run_update_simulator():
-    """Run the update simulator after a delay."""
-    simulator = ProductUpdateSimulator()
+def print_debug_info():
+    """Print debugging information to help diagnose issues."""
+    print("\n=== Debug Information ===")
     
-    # Wait for a random time between 15-30 seconds
-    delay = random.randint(15, 30)
+    # Check OpenAI API key
+    if "OPENAI_API_KEY" in os.environ:
+        key = os.environ["OPENAI_API_KEY"]
+        # Only show the first 5 and last 5 characters of the key
+        if len(key) > 12:
+            masked_key = f"{key[:5]}...{key[-5:]}"
+        else:
+            masked_key = "***SET BUT TOO SHORT***"
+        print(f"OPENAI_API_KEY: {masked_key} (length: {len(key)})")
+    else:
+        print("OPENAI_API_KEY=unset")
+    
+    # Check Ollama availability
+    try:
+        response = requests.get(f"{LLMConfig.OLLAMA_BASE_URL}/api/tags", timeout=2)
+        print(f"Ollama Status: Available (HTTP {response.status_code})")
+        try:
+            models = response.json().get("models", [])
+            if models:
+                model_names = [model.get("name") for model in models]
+                print(f"Ollama Models: {', '.join(model_names)}")
+            else:
+                print("Ollama Models: None found")
+        except Exception:
+            print("Ollama Models: Error parsing response")
+    except Exception as e:
+        print(f"Ollama Status: Not available ({str(e)})")
+    
+    print("========================")
+
+def run_update_simulator(delay=None, db_path="./demo_vector_db"):
+    """
+    Run the update simulator after a delay.
+    
+    Args:
+        delay: Seconds to wait before simulating update (if None, uses random 15-30s)
+        db_path: Path to the vector database directory
+    """
+    simulator = ProductUpdateSimulator(db_path=db_path)
+    
+    # Set delay time
+    if delay is None:
+        delay = random.randint(15, 30)
+        
+    logger.info(f"Product update will be simulated in {delay} seconds...")
     print(f"Product update will be simulated in {delay} seconds...")
     time.sleep(delay)
     
     simulator.simulate_update()
 
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="RAG Chat Interface with Live Updates")
+    parser.add_argument("--vector-db", "-v", default="./demo_vector_db",
+                      help="Path to vector database (default: ./demo_vector_db)")
+    parser.add_argument("--debug", "-d", action="store_true",
+                      help="Enable additional debug output")
+    parser.add_argument("--delay", type=int, default=None,
+                      help="Delay in seconds before simulating product update (default: random 15-30s)")
+    parser.add_argument("--no-update", action="store_true",
+                      help="Disable product update simulation")
+    
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    # Check if the database path exists
-    if not os.path.exists("./demo_vector_db"):
-        print("Database path not found. Please run the product replacement demo first.")
+    try:
+        # Parse command line arguments
+        args = parse_arguments()
+        
+        # Set up more verbose logging if debug flag is set
+        if args.debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+            logger.debug("Debug logging enabled")
+        
+        # Print debug info at the start
+        print_debug_info()
+        
+        # Check if the database path exists
+        if not os.path.exists(args.vector_db):
+            logger.error(f"Database path not found: {args.vector_db}")
+            print(f"Database path not found: {args.vector_db}")
+            print("Please run the product replacement demo first: python rag-update-demo.py")
+            exit(1)
+        
+        # Start the update simulator in a background thread unless disabled
+        if not args.no_update:
+            update_thread = threading.Thread(
+                target=run_update_simulator,
+                args=(args.delay, args.vector_db)
+            )
+            update_thread.daemon = True
+            update_thread.start()
+        else:
+            logger.info("Product update simulation disabled.")
+        
+        # Run the chat interface
+        try:
+            chat = ProductChatAssistant(db_path=args.vector_db)
+            chat.cmdloop()
+        except KeyboardInterrupt:
+            logger.info("Chat interface terminated by user.")
+            print("\nGoodbye!")
+        except Exception as e:
+            logger.error(f"Error in chat interface: {str(e)}")
+            print(f"\nAn error occurred: {str(e)}")
+            print("Please check your environment setup and try again.")
+            
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        
+        # Print debug info again on error
+        print_debug_info()
+        
+        error_msg = str(e).lower()
+        if "openai" in error_msg and "api" in error_msg:
+            if "quota" in error_msg or "insufficient_quota" in error_msg or "429" in error_msg:
+                print("\nERROR: OpenAI API quota exceeded or rate limit hit.")
+                print("Please check your billing details at https://platform.openai.com/account/billing")
+                print("Alternatively, you can use Ollama instead.")
+            else:
+                print("\nERROR: There was an issue with the OpenAI API.")
+                print(f"Details: {str(e)}")
+                print("Alternatively, you can use Ollama instead.")
+        elif "ollama" in error_msg:
+            print("\nERROR: There was an issue connecting to Ollama server.")
+            print(f"Details: {str(e)}")
+            print("Make sure Ollama is running locally on port 11434")
+        else:
+            print(f"\nERROR: {str(e)}")
+            print("\nTroubleshooting:")
+            print("- Try running with --debug flag for more verbose output: python openai-rag-chat.py --debug")
+            print("- Make sure the demo_vector_db directory exists by running: python rag-update-demo.py")
+            print("- Ensure either OpenAI API key is set or Ollama server is running")
+        
         exit(1)
-    
-    # Start the update simulator in a background thread
-    update_thread = threading.Thread(target=run_update_simulator)
-    update_thread.daemon = True
-    update_thread.start()
-    
-    # Run the chat interface in the main thread
-    run_chat_interface()
