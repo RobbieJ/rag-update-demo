@@ -22,8 +22,16 @@ One of the following is required for LLM functionality:
 - langchain-openai and valid OPENAI_API_KEY (for OpenAI LLM and embeddings)
 - Ollama running locally on port 11434 (for local LLM inference)
 
-Note: This script requires either OpenAI API key or Ollama for LLM functionality.
-Mock embeddings will still be used if OpenAI embeddings are not available.
+Usage:
+python rag-update-demo.py [options]
+
+Options:
+  --vector-db PATH, -v PATH   Specify custom vector database path (default: ./demo_vector_db)
+  --clean, -c                 Clean existing vector database before running
+  --debug, -d                 Enable additional debug output
+  
+Note: If you encounter dimensionality errors with an existing vector database,
+use the --clean flag to start with a fresh database.
 """
 
 import os
@@ -293,12 +301,73 @@ class ProductKnowledgeManager:
         self.product_relationships_file = os.path.join(vector_db_path, "product_relationships.json")
         self.product_relationships = self._load_product_relationships()
     
+    def _check_and_repair_vector_db(self) -> bool:
+        """
+        Check if the vector database has dimension mismatch or is corrupted,
+        and try to fix it by removing the database files.
+        
+        Returns:
+            bool: True if repair was needed and performed, False otherwise
+        """
+        # Check if vector database exists
+        if not os.path.exists(self.vector_db_path):
+            return False
+            
+        try:
+            # Try to load Chroma to see if it works
+            test_db = Chroma(
+                persist_directory=self.vector_db_path,
+                collection_name="product_knowledge",
+                embedding_function=self.embedding_model
+            )
+            
+            # Try a basic operation to validate the database
+            try:
+                test_db._collection.count()
+                # If we get here, the database is working fine
+                return False
+            except Exception as e:
+                error_str = str(e).lower()
+                if "dimension" in error_str or "does not match" in error_str:
+                    logger.warning(f"Detected dimension mismatch in vector database: {str(e)}")
+                    logger.warning(f"Removing vector database at {self.vector_db_path}")
+                    
+                    # Remove the entire directory
+                    import shutil
+                    shutil.rmtree(self.vector_db_path, ignore_errors=True)
+                    
+                    # Recreate an empty directory
+                    os.makedirs(self.vector_db_path, exist_ok=True)
+                    return True
+                    
+        except Exception as e:
+            logger.warning(f"Vector database check failed: {str(e)}")
+            # Only repair if it seems to be a database issue
+            error_str = str(e).lower()
+            if any(term in error_str for term in ["dimension", "corrupt", "invalid", "type", "schema"]):
+                logger.warning(f"Removing potentially corrupted vector database at {self.vector_db_path}")
+                
+                # Remove the entire directory
+                import shutil
+                shutil.rmtree(self.vector_db_path, ignore_errors=True)
+                
+                # Recreate an empty directory
+                os.makedirs(self.vector_db_path, exist_ok=True)
+                return True
+        
+        return False
+    
     def _initialize_vector_db(self) -> None:
         """Initialize or load the vector database from disk."""
         logger.info(f"Initializing vector database at {self.vector_db_path}")
         
         # Create the directory if it doesn't exist
         os.makedirs(self.vector_db_path, exist_ok=True)
+        
+        # Check for corrupted database and repair if needed
+        repaired = self._check_and_repair_vector_db()
+        if repaired:
+            logger.info("Vector database was repaired - starting with fresh database")
         
         try:
             # Try with collection_name parameter (newer versions might require it)
@@ -861,14 +930,20 @@ class ProductAwareRAG:
             return self.chain.invoke(question)
 
 
-def run_product_replacement_demo():
-    """Run a demonstration of the product replacement workflow."""
+def run_product_replacement_demo(vector_db_path="./demo_vector_db"):
+    """
+    Run a demonstration of the product replacement workflow.
+    
+    Args:
+        vector_db_path: Path to the vector database directory
+    """
     print("RAG Product Replacement Workflow Demo")
     print("=====================================")
+    print(f"Using vector database path: {vector_db_path}")
     
     # Initialize the knowledge manager
     # Note: This demo will use mock embeddings if OpenAI API key is not available
-    manager = ProductKnowledgeManager(vector_db_path="./demo_vector_db")
+    manager = ProductKnowledgeManager(vector_db_path=vector_db_path)
     
     # Step 1: Add knowledge for the original product
     print("\n1. Adding knowledge for the original product (ProductA)")
@@ -1065,13 +1140,42 @@ def print_debug_info():
     
     print("========================")
 
+def parse_arguments():
+    """Parse command line arguments"""
+    import argparse
+    parser = argparse.ArgumentParser(description="RAG Product Replacement Demo")
+    parser.add_argument("--vector-db", "-v", default="./demo_vector_db",
+                      help="Path to vector database (default: ./demo_vector_db)")
+    parser.add_argument("--clean", "-c", action="store_true",
+                      help="Clean existing vector database before running")
+    parser.add_argument("--debug", "-d", action="store_true",
+                      help="Enable additional debug output")
+    
+    return parser.parse_args()
+
 if __name__ == "__main__":
     try:
+        # Parse command line arguments
+        args = parse_arguments()
+        
+        # Set up more verbose logging if debug flag is set
+        if args.debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+            logging.debug("Debug logging enabled")
+        
+        # Clean vector database if requested
+        if args.clean:
+            import shutil
+            if os.path.exists(args.vector_db):
+                print(f"Cleaning vector database at {args.vector_db}")
+                shutil.rmtree(args.vector_db, ignore_errors=True)
+                os.makedirs(args.vector_db, exist_ok=True)
+        
         # Print debug info at the start
         print_debug_info()
         
-        # Run the demo
-        run_product_replacement_demo()
+        # Run the demo with the specified vector database path
+        run_product_replacement_demo(vector_db_path=args.vector_db)
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         
@@ -1083,14 +1187,31 @@ if __name__ == "__main__":
             print("\nERROR: OpenAI API quota exceeded or rate limit hit.")
             print("Please check your billing details at https://platform.openai.com/account/billing")
             print("Alternatively, you can use Ollama instead.")
+        elif "dimension" in error_msg and "does not match" in error_msg:
+            print("\nERROR: Embedding dimension mismatch in the vector database.")
+            print(f"Details: {str(e)}")
+            print("\nPossible solutions:")
+            print("1. Run with --clean flag to start with a fresh database: python rag-update-demo.py --clean")
+            print("2. Use a different directory: python rag-update-demo.py --vector-db ./new_vector_db")
+            print("3. Manually delete the database: rm -rf ./demo_vector_db")
         elif "openai" in error_msg and "api" in error_msg:
             print("\nERROR: There was an issue with the OpenAI API.")
             print(f"Details: {str(e)}")
             print("Alternatively, you can use Ollama instead.")
+        elif "chroma" in error_msg or "vector" in error_msg or "database" in error_msg:
+            print("\nERROR: There was an issue with the vector database.")
+            print(f"Details: {str(e)}")
+            print("\nPossible solutions:")
+            print("1. Run with --clean flag to start with a fresh database: python rag-update-demo.py --clean")
+            print("2. Use a different directory: python rag-update-demo.py --vector-db ./new_vector_db")
+            print("3. Manually delete the database: rm -rf ./demo_vector_db")
         else:
-            print("\nERROR: This script requires either an OpenAI API key or a running Ollama server.")
-            print("- To use OpenAI, set the OPENAI_API_KEY environment variable.")
-            print("- To use Ollama, make sure the server is running on http://localhost:11434")
+            print(f"\nERROR: {str(e)}")
+            print("\nTroubleshooting:")
+            print("- Both OpenAI API key and Ollama server appear to be available")
+            print("- Check the error message above for more specific details")
+            print("- Try running with --clean flag: python rag-update-demo.py --clean")
+            print("- Try running with --debug flag for more verbose output: python rag-update-demo.py --debug")
         
         exit(1)
     
