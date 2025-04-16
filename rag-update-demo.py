@@ -163,9 +163,29 @@ def create_llm() -> BaseChatModel:
     # Try to use OpenAI's ChatGPT if available
     try:
         if "OPENAI_API_KEY" in os.environ:
-            llm = ChatOpenAI(model=LLMConfig.OPENAI_MODEL, temperature=0)
-            logger.info("Using OpenAI for text generation")
-            return llm
+            try:
+                # Initialize the LLM
+                llm = ChatOpenAI(model=LLMConfig.OPENAI_MODEL, temperature=0)
+                
+                # Test with a simple query to verify API key validity and quota
+                test_response = llm.invoke("This is a test message to verify API key. Reply with 'valid'.")
+                if "valid" in test_response.content.lower():
+                    logger.info(f"Using OpenAI {LLMConfig.OPENAI_MODEL} for text generation")
+                    return llm
+                else:
+                    logger.warning("OpenAI API test response did not contain expected output")
+                    raise ValueError("OpenAI API returned unexpected response")
+                    
+            except Exception as openai_err:
+                if "429" in str(openai_err) or "quota" in str(openai_err).lower() or "insufficient_quota" in str(openai_err):
+                    logger.error("OpenAI API quota exceeded or rate limit hit. Please check your billing details.")
+                    raise ValueError(f"OpenAI API quota exceeded. Check your billing details at https://platform.openai.com/account/billing. Error: {str(openai_err)}")
+                else:
+                    logger.warning(f"OpenAI initialization error: {str(openai_err)}")
+                    raise ValueError(f"OpenAI API error: {str(openai_err)}")
+        else:
+            logger.info("No OpenAI API key found in environment variables")
+            raise ValueError("No OpenAI API key found in environment variables")
     except Exception as e:
         logger.warning(f"Could not initialize OpenAI: {str(e)}")
     
@@ -176,11 +196,20 @@ def create_llm() -> BaseChatModel:
         if ollama_llm._validate():
             logger.info(f"Using Ollama with model {ollama_llm.model} for text generation")
             return ollama_llm
+        else:
+            logger.warning("Ollama validation failed")
+            raise ValueError("Ollama validation failed")
     except Exception as e:
         logger.warning(f"Could not initialize Ollama: {str(e)}")
     
     # If we get here, neither OpenAI nor Ollama is available
-    raise Exception("No LLM provider available. Please configure either OpenAI API key or start Ollama server.")
+    error_message = """
+No LLM provider available. Please configure one of the following:
+1. Set OPENAI_API_KEY environment variable with a valid API key and ensure you have quota available
+2. Start a local Ollama server (http://localhost:11434) with at least one model installed
+"""
+    logger.error(error_message)
+    raise Exception(error_message)
 
 class ProductKnowledgeManager:
     """
@@ -213,14 +242,28 @@ class ProductKnowledgeManager:
                 import os
                 if "OPENAI_API_KEY" in os.environ:
                     from langchain_openai import OpenAIEmbeddings
-                    self.embedding_model = OpenAIEmbeddings()
-                    print("Using OpenAI embeddings")
+                    try:
+                        # Test the embeddings with a simple query
+                        test_embeddings = OpenAIEmbeddings()
+                        test_result = test_embeddings.embed_query("Test query for API validation")
+                        if test_result and len(test_result) > 0:
+                            self.embedding_model = test_embeddings
+                            logger.info("Using OpenAI embeddings - API key validated successfully")
+                        else:
+                            raise ValueError("OpenAI embeddings returned empty result")
+                    except Exception as e:
+                        if "429" in str(e) or "quota" in str(e).lower() or "insufficient_quota" in str(e):
+                            logger.error("OpenAI API quota exceeded or rate limit hit. Please check your billing details.")
+                            raise ValueError("OpenAI API quota exceeded. Check your billing details at https://platform.openai.com/account/billing")
+                        else:
+                            logger.warning(f"OpenAI embeddings error: {str(e)}")
+                            raise ValueError(f"OpenAI API error: {str(e)}")
                 else:
                     raise ValueError("No OpenAI API key found")
-            except (ImportError, ValueError):
+            except (ImportError, ValueError) as e:
                 # Fall back to a simple mock embedding model for demonstration
                 from langchain_core.embeddings import Embeddings
-                print("Using mock embeddings (for demonstration only)")
+                logger.info(f"Using mock embeddings: {str(e)}")
                 
                 class MockEmbeddings(Embeddings):
                     """Simple mock embedding model for demonstration purposes."""
@@ -993,8 +1036,20 @@ if __name__ == "__main__":
         run_product_replacement_demo()
     except Exception as e:
         logger.error(f"Error: {str(e)}")
-        print("\nERROR: This script requires either an OpenAI API key or a running Ollama server.")
-        print("- To use OpenAI, set the OPENAI_API_KEY environment variable.")
-        print("- To use Ollama, make sure the server is running on http://localhost:11434")
+        
+        error_msg = str(e).lower()
+        if "quota" in error_msg or "insufficient_quota" in error_msg or "429" in error_msg:
+            print("\nERROR: OpenAI API quota exceeded or rate limit hit.")
+            print("Please check your billing details at https://platform.openai.com/account/billing")
+            print("Alternatively, you can use Ollama instead.")
+        elif "openai" in error_msg and "api" in error_msg:
+            print("\nERROR: There was an issue with the OpenAI API.")
+            print(f"Details: {str(e)}")
+            print("Alternatively, you can use Ollama instead.")
+        else:
+            print("\nERROR: This script requires either an OpenAI API key or a running Ollama server.")
+            print("- To use OpenAI, set the OPENAI_API_KEY environment variable.")
+            print("- To use Ollama, make sure the server is running on http://localhost:11434")
+        
         exit(1)
     
