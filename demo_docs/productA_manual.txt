@@ -1,0 +1,17 @@
+
+        # ProductA User Manual
+        
+        Thank you for purchasing ProductA!
+        
+        ## Setup Instructions
+        
+        1. Unbox the ProductA
+        2. Connect to power
+        3. Press the power button for 3 seconds
+        4. Follow on-screen instructions
+        
+        ## Troubleshooting
+        
+        If ProductA does not power on, check the power connection and ensure
+        the battery is charged.
+        

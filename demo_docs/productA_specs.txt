@@ -1,0 +1,13 @@
+
+        # ProductA Specifications
+        
+        Model: ProductA-2023
+        Processing power: 2.4 GHz
+        Memory: 8GB
+        Storage: 256GB SSD
+        Battery life: 10 hours
+        Weight: 1.8 kg
+        
+        ProductA is compatible with all standard accessories and can be upgraded
+        to the latest software version.
+        

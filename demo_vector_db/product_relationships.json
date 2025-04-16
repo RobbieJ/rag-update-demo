@@ -1,0 +1,48 @@
+{
+  "products": {
+    "ProductA": {
+      "status": "retired",
+      "added_date": "2025-04-16T10:43:25.877773",
+      "document_count": 2,
+      "sources": [
+        "productA_specs.txt",
+        "productA_manual.txt"
+      ],
+      "retirement_date": "2025-04-16T10:49:44.587969"
+    },
+    "ProductAccessory": {
+      "status": "active",
+      "added_date": "2025-04-16T10:43:26.746628",
+      "document_count": 1,
+      "sources": [
+        "accessory_specs.txt"
+      ]
+    },
+    "ProductB": {
+      "status": "active",
+      "added_date": "2025-04-16T10:43:26.753055",
+      "document_count": 2,
+      "sources": [
+        "productB_specs.txt",
+        "productB_manual.txt"
+      ]
+    }
+  },
+  "replacements": {
+    "ProductA": "ProductB"
+  },
+  "history": [
+    {
+      "date": "2025-04-16T10:43:26.750078",
+      "action": "retirement",
+      "product_id": "ProductA",
+      "replacement_product_id": "ProductB"
+    },
+    {
+      "date": "2025-04-16T10:49:44.587969",
+      "action": "retirement",
+      "product_id": "ProductA",
+      "replacement_product_id": "ProductB"
+    }
+  ]
+}

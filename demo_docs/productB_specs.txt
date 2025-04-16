@@ -1,0 +1,14 @@
+
+        # ProductB Specifications
+        
+        Model: ProductB-2025
+        Processing power: 3.6 GHz
+        Memory: 16GB
+        Storage: 512GB SSD
+        Battery life: 15 hours
+        Weight: 1.5 kg
+        
+        ProductB is the next generation replacement for ProductA, with improved
+        performance and battery life. It maintains compatibility with most
+        ProductA accessories.
+        

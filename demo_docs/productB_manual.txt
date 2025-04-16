@@ -1,0 +1,22 @@
+
+        # ProductB User Manual
+        
+        Thank you for purchasing ProductB!
+        
+        ## Setup Instructions
+        
+        1. Unbox the ProductB
+        2. Connect to power
+        3. Press the power button for 2 seconds
+        4. Follow on-screen instructions
+        
+        ## Migration from ProductA
+        
+        If you're upgrading from ProductA, you can transfer your data using
+        the ProductB Migration Assistant.
+        
+        ## Troubleshooting
+        
+        If ProductB does not power on, check the power connection and ensure
+        the battery is charged.
+        
