@@ -29,6 +29,7 @@ Options:
   --vector-db PATH, -v PATH   Specify custom vector database path (default: ./demo_vector_db)
   --clean, -c                 Clean existing vector database before running
   --debug, -d                 Enable additional debug output
+  --yes, -y                   Auto-confirm all prompts (non-interactive mode)
   
 Note: If you encounter dimensionality errors with an existing vector database,
 use the --clean flag to start with a fresh database.
@@ -942,12 +943,27 @@ class ProductAwareRAG:
             return self.chain.invoke(question)
 
 
-def run_product_replacement_demo(vector_db_path="./demo_vector_db"):
+def get_user_confirmation(prompt, default="y"):
+    """Get user confirmation with a yes/no prompt."""
+    valid_responses = {
+        'yes': True, 'y': True, 'ye': True,
+        'no': False, 'n': False,
+        '': default.lower() in ['yes', 'y', 'ye']
+    }
+    
+    while True:
+        choice = input(f"{prompt} [Y/n]: ").lower()
+        if choice in valid_responses:
+            return valid_responses[choice]
+        print("Please respond with 'yes' or 'no' (or 'y' or 'n').")
+
+def run_product_replacement_demo(vector_db_path="./demo_vector_db", auto_confirm=False):
     """
     Run a demonstration of the product replacement workflow.
     
     Args:
         vector_db_path: Path to the vector database directory
+        auto_confirm: Skip user confirmation prompts if True
     """
     print("RAG Product Replacement Workflow Demo")
     print("=====================================")
@@ -1069,17 +1085,30 @@ def run_product_replacement_demo(vector_db_path="./demo_vector_db"):
         """)
     
     # Step 4: Execute the product replacement workflow
-    print("\n4. Executing the product replacement workflow")
+    print("\n4. Product replacement workflow")
+    print("\nYou are about to replace ProductA with ProductB in the knowledge base.")
+    print("This will:")
+    print("- Mark ProductA as retired in the database")
+    print("- Add ProductB as its official replacement")
+    print("- Add the new ProductB documentation to the knowledge base")
+    print("- Update cross-references from other products")
     
-    result = manager.replace_product(
-        old_product_id="ProductA",
-        new_product_id="ProductB",
-        new_product_docs=["./demo_docs/productB_specs.txt", "./demo_docs/productB_manual.txt"],
-        new_product_metadata={"version": "2025", "category": "electronic"},
-        hard_delete=False  # Use soft deletion to maintain historical context
-    )
-    
-    print(f"Replacement result: {json.dumps(result, indent=2)}")
+    # Ask for user confirmation unless auto_confirm is set
+    if auto_confirm or get_user_confirmation("Do you want to proceed with the replacement?"):
+        print("\nExecuting product replacement workflow...")
+        
+        result = manager.replace_product(
+            old_product_id="ProductA",
+            new_product_id="ProductB",
+            new_product_docs=["./demo_docs/productB_specs.txt", "./demo_docs/productB_manual.txt"],
+            new_product_metadata={"version": "2025", "category": "electronic"},
+            hard_delete=False  # Use soft deletion to maintain historical context
+        )
+        
+        print(f"Replacement result: {json.dumps(result, indent=2)}")
+    else:
+        print("\nProduct replacement skipped.")
+        print("ProductA will remain active in the knowledge base.")
     
     # Step 5: Set up the RAG system and run some queries
     print("\n5. Setting up the RAG system and running queries")
@@ -1162,6 +1191,8 @@ def parse_arguments():
                       help="Clean existing vector database before running")
     parser.add_argument("--debug", "-d", action="store_true",
                       help="Enable additional debug output")
+    parser.add_argument("--yes", "-y", action="store_true",
+                      help="Auto-confirm all prompts (non-interactive mode)")
     
     return parser.parse_args()
 
@@ -1186,8 +1217,8 @@ if __name__ == "__main__":
         # Print debug info at the start
         print_debug_info()
         
-        # Run the demo with the specified vector database path
-        run_product_replacement_demo(vector_db_path=args.vector_db)
+        # Run the demo with the specified vector database path and auto-confirm if requested
+        run_product_replacement_demo(vector_db_path=args.vector_db, auto_confirm=args.yes)
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         
