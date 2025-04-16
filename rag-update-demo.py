@@ -531,8 +531,14 @@ class ProductKnowledgeManager:
             }
             self._save_product_relationships()
         
-        # Persist the vector store to disk
-        self.vectorstore.persist()
+        # Persist the vector store to disk if the method exists
+        try:
+            if hasattr(self.vectorstore, "persist") and callable(getattr(self.vectorstore, "persist")):
+                self.vectorstore.persist()
+            else:
+                logger.info("No persist method found on vectorstore - newer Chroma versions persist automatically")
+        except Exception as e:
+            logger.warning(f"Error persisting vector store: {str(e)} - continuing anyway")
         
         return len(ids)
     
@@ -627,8 +633,14 @@ class ProductKnowledgeManager:
                 "updated_documents": updated_count
             }
         
-        # Persist changes
-        self.vectorstore.persist()
+        # Persist changes if the method exists
+        try:
+            if hasattr(self.vectorstore, "persist") and callable(getattr(self.vectorstore, "persist")):
+                self.vectorstore.persist()
+            else:
+                logger.info("No persist method found on vectorstore - newer Chroma versions persist automatically")
+        except Exception as e:
+            logger.warning(f"Error persisting vector store: {str(e)} - continuing anyway")
         
         return result
 
