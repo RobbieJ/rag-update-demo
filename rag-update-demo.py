@@ -14,9 +14,12 @@ Requirements:
 - langchain-core
 - langchain-community
 - langchain-text-splitters
-- langchain-chroma
 - chromadb (or other vector store)
 - requests (for Ollama API)
+
+Note: This code may generate a deprecation warning about Chroma.
+To fix it permanently, install the langchain-chroma package and
+update the import to: from langchain_chroma import Chroma
 
 One of the following is required for LLM functionality:
 - langchain-openai and valid OPENAI_API_KEY (for OpenAI LLM and embeddings)
@@ -35,7 +38,8 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # Vector database and embedding dependencies
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma  # Updated import for Chroma
+# Keep using community version for now - proper fix requires installing langchain-chroma package
+from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, DirectoryLoader
