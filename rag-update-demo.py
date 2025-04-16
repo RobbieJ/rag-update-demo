@@ -14,6 +14,7 @@ Requirements:
 - langchain-core
 - langchain-community
 - langchain-text-splitters
+- langchain-chroma
 - chromadb (or other vector store)
 - requests (for Ollama API)
 
@@ -34,7 +35,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # Vector database and embedding dependencies
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma  # Updated import for Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, DirectoryLoader
