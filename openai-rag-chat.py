@@ -1,11 +1,14 @@
 """
-LLM-Powered RAG Chat Interface with Live Updates
+LLM-Powered RAG Chat Interface
 
 This script provides a text-based chat interface that:
 1. Uses either OpenAI API or local Ollama for response generation
 2. Reads from the same JSON knowledge base as the RAG system
-3. Monitors for changes to the product information
+3. Monitors for changes to the product information in real-time
 4. Clearly indicates which LLM is being used (OpenAI or Ollama)
+
+Note: This script only provides the chat interface. To update product information, 
+use the rag-update-demo.py script.
 
 Requirements:
 - openai (pip install openai) for OpenAI API
@@ -17,9 +20,6 @@ python openai-rag-chat.py [options]
 Options:
   --vector-db PATH, -v PATH   Specify custom vector database path (default: ./demo_vector_db)
   --debug, -d                 Enable additional debug output
-  --yes, -y                   Auto-confirm all prompts (non-interactive mode)
-  --delay SECONDS             Specify delay for product update simulation (default: random 15-30s)
-  --no-update                 Disable product update simulation
 """
 
 import os
@@ -27,7 +27,6 @@ import json
 import time
 import threading
 import cmd
-import random
 import requests
 import logging
 import argparse
@@ -481,61 +480,15 @@ Important:
         print("  What products do you offer?")
 
 
-class ProductUpdateSimulator:
-    """Simulates product updates by another process."""
+def run_chat_interface(db_path="./demo_vector_db"):
+    """
+    Run the chat interface.
     
-    def __init__(self, db_path: str = "./demo_vector_db"):
-        """Initialize the simulator."""
-        self.db_path = db_path
-        self.relationships_file = os.path.join(db_path, "product_relationships.json")
-    
-    def simulate_update(self):
-        """Simulate a product update."""
-        if not os.path.exists(self.relationships_file):
-            print("No product relationships file found. Run the product replacement demo first.")
-            return
-        
-        with open(self.relationships_file, 'r') as f:
-            product_info = json.load(f)
-        
-        # Check if ProductA is already retired
-        if "ProductA" in product_info.get("products", {}) and product_info["products"]["ProductA"].get("status") == "retired":
-            print("ProductA is already retired. No update needed.")
-            return
-        
-        print("Simulating product retirement...")
-        
-        # Update product status
-        if "ProductA" in product_info.get("products", {}):
-            product_info["products"]["ProductA"]["status"] = "retired"
-            product_info["products"]["ProductA"]["retirement_date"] = datetime.now().isoformat()
-        
-        # Add replacement information
-        if "replacements" not in product_info:
-            product_info["replacements"] = {}
-        product_info["replacements"]["ProductA"] = "ProductB"
-        
-        # Add to history
-        if "history" not in product_info:
-            product_info["history"] = []
-        product_info["history"].append({
-            "date": datetime.now().isoformat(),
-            "action": "retirement",
-            "product_id": "ProductA",
-            "replacement_product_id": "ProductB"
-        })
-        
-        # Save updated information
-        with open(self.relationships_file, 'w') as f:
-            json.dump(product_info, f, indent=2)
-        
-        print("Product update simulated: ProductA has been retired and replaced by ProductB")
-
-
-def run_chat_interface():
-    """Run the chat interface."""
+    Args:
+        db_path: Path to the vector database directory
+    """
     try:
-        chat = ProductChatAssistant()
+        chat = ProductChatAssistant(db_path=db_path)
         chat.cmdloop()
     except KeyboardInterrupt:
         print("\nGoodbye!")
@@ -578,37 +531,13 @@ def print_debug_info():
     
     print("========================")
 
-def run_update_simulator(delay=None, db_path="./demo_vector_db"):
-    """
-    Run the update simulator after a delay.
-    
-    Args:
-        delay: Seconds to wait before simulating update (if None, uses random 15-30s)
-        db_path: Path to the vector database directory
-    """
-    simulator = ProductUpdateSimulator(db_path=db_path)
-    
-    # Set delay time
-    if delay is None:
-        delay = random.randint(15, 30)
-        
-    logger.info(f"Product update will be simulated in {delay} seconds...")
-    print(f"Product update will be simulated in {delay} seconds...")
-    time.sleep(delay)
-    
-    simulator.simulate_update()
-
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description="RAG Chat Interface with Live Updates")
+    parser = argparse.ArgumentParser(description="RAG Chat Interface")
     parser.add_argument("--vector-db", "-v", default="./demo_vector_db",
                       help="Path to vector database (default: ./demo_vector_db)")
     parser.add_argument("--debug", "-d", action="store_true",
                       help="Enable additional debug output")
-    parser.add_argument("--delay", type=int, default=None,
-                      help="Delay in seconds before simulating product update (default: random 15-30s)")
-    parser.add_argument("--no-update", action="store_true",
-                      help="Disable product update simulation")
     
     return parser.parse_args()
 
@@ -632,28 +561,12 @@ if __name__ == "__main__":
             print("Please run the product replacement demo first: python rag-update-demo.py")
             exit(1)
         
-        # Start the update simulator in a background thread unless disabled
-        if not args.no_update:
-            update_thread = threading.Thread(
-                target=run_update_simulator,
-                args=(args.delay, args.vector_db)
-            )
-            update_thread.daemon = True
-            update_thread.start()
-        else:
-            logger.info("Product update simulation disabled.")
+        logger.info(f"Starting chat interface with database at {args.vector_db}")
+        print(f"Starting chat interface with database at {args.vector_db}")
+        print("Note: To update product information, run the separate script: python rag-update-demo.py")
         
         # Run the chat interface
-        try:
-            chat = ProductChatAssistant(db_path=args.vector_db)
-            chat.cmdloop()
-        except KeyboardInterrupt:
-            logger.info("Chat interface terminated by user.")
-            print("\nGoodbye!")
-        except Exception as e:
-            logger.error(f"Error in chat interface: {str(e)}")
-            print(f"\nAn error occurred: {str(e)}")
-            print("Please check your environment setup and try again.")
+        run_chat_interface(db_path=args.vector_db)
             
     except Exception as e:
         logger.error(f"Error: {str(e)}")
