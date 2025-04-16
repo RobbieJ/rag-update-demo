@@ -14,12 +14,9 @@ Requirements:
 - langchain-core
 - langchain-community
 - langchain-text-splitters
+- langchain-chroma>=0.2.3
 - chromadb (or other vector store)
 - requests (for Ollama API)
-
-Note: This code may generate a deprecation warning about Chroma.
-To fix it permanently, install the langchain-chroma package and
-update the import to: from langchain_chroma import Chroma
 
 One of the following is required for LLM functionality:
 - langchain-openai and valid OPENAI_API_KEY (for OpenAI LLM and embeddings)
@@ -38,8 +35,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 # Vector database and embedding dependencies
 from langchain_openai import OpenAIEmbeddings
-# Keep using community version for now - proper fix requires installing langchain-chroma package
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma  # Updated import for Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, PyPDFLoader, DirectoryLoader
@@ -261,13 +257,41 @@ class ProductKnowledgeManager:
         # Create the directory if it doesn't exist
         os.makedirs(self.vector_db_path, exist_ok=True)
         
-        # Initialize Chroma with persistence
-        self.vectorstore = Chroma(
-            persist_directory=self.vector_db_path,
-            embedding_function=self.embedding_model
-        )
-        
-        logger.info(f"Vector database initialized with {self.vectorstore._collection.count()} documents")
+        try:
+            # Try with collection_name parameter (newer versions might require it)
+            try:
+                # Initialize Chroma with persistence and collection name
+                self.vectorstore = Chroma(
+                    persist_directory=self.vector_db_path,
+                    collection_name="product_knowledge",
+                    embedding_function=self.embedding_model
+                )
+            except Exception as inner_e:
+                logger.warning(f"Could not initialize with collection_name, trying without: {str(inner_e)}")
+                # Try without collection_name as fallback
+                self.vectorstore = Chroma(
+                    persist_directory=self.vector_db_path,
+                    embedding_function=self.embedding_model
+                )
+            
+            # Get collection count if possible
+            collection_count = 0
+            try:
+                if hasattr(self.vectorstore, "_collection") and hasattr(self.vectorstore._collection, "count"):
+                    collection_count = self.vectorstore._collection.count()
+                elif hasattr(self.vectorstore, "get") and callable(getattr(self.vectorstore, "get")):
+                    # Newer versions might use get() to retrieve all documents
+                    results = self.vectorstore.get()
+                    if results and isinstance(results, dict) and "ids" in results:
+                        collection_count = len(results["ids"])
+                logger.info(f"Vector database initialized with approximately {collection_count} documents")
+            except Exception as count_e:
+                logger.warning(f"Could not get collection count: {str(count_e)}")
+                logger.info("Vector database initialized successfully")
+            
+        except Exception as e:
+            logger.error(f"Error initializing Chroma: {str(e)}")
+            raise Exception(f"Could not initialize vector database: {str(e)}")
     
     def _load_product_relationships(self) -> Dict:
         """Load product relationships from disk or initialize if not present."""
@@ -300,13 +324,27 @@ class ProductKnowledgeManager:
         Returns:
             List of tuples containing document IDs and their metadata
         """
-        # Query the Chroma collection directly with a metadata filter
-        results = self.vectorstore._collection.get(
-            where={"product_id": product_id}
-        )
-        
-        # Return list of document IDs and their metadata
-        return list(zip(results['ids'], results['metadatas']))
+        try:
+            # Try newer API approach first
+            if hasattr(self.vectorstore, "get") and callable(getattr(self.vectorstore, "get")):
+                results = self.vectorstore.get(
+                    where={"product_id": product_id}
+                )
+            # Fall back to older collection-based API if needed
+            elif hasattr(self.vectorstore, "_collection"):
+                results = self.vectorstore._collection.get(
+                    where={"product_id": product_id}
+                )
+            else:
+                raise ValueError("Could not find appropriate method to query vector store")
+            
+            # Return list of document IDs and their metadata
+            return list(zip(results['ids'], results['metadatas']))
+            
+        except Exception as e:
+            logger.error(f"Error identifying documents for product {product_id}: {str(e)}")
+            logger.warning("Returning empty result set")
+            return []
     
     def add_product_knowledge(
         self, 
