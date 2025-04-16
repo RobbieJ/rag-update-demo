@@ -17,12 +17,12 @@ Requirements:
 - chromadb (or other vector store)
 - requests (for Ollama API)
 
-Optional dependencies:
+One of the following is required for LLM functionality:
 - langchain-openai and valid OPENAI_API_KEY (for OpenAI LLM and embeddings)
 - Ollama running locally on port 11434 (for local LLM inference)
 
-If neither OpenAI nor Ollama are available, the script will fall back to mock implementations
-for both embeddings and LLM responses for demonstration purposes.
+Note: This script requires either OpenAI API key or Ollama for LLM functionality.
+Mock embeddings will still be used if OpenAI embeddings are not available.
 """
 
 import os
@@ -148,41 +148,16 @@ class OllamaChatLLM(BaseChatModel):
         """Return the LLM type identifier"""
         return "ollama-chat-llm"
 
-class MockChatLLM(BaseChatModel):
-    """Simple mock LLM for demonstration purposes when neither OpenAI nor Ollama is available."""
-    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-        # Simple template-based response
-        last_message = messages[-1].content
-        
-        if "ProductA" in last_message:
-            response = ("ProductA has been retired and replaced by ProductB. "
-                        "ProductB offers improved performance with 3.6 GHz processing "
-                        "power, 16GB memory, and 15 hours of battery life.")
-        elif "ProductB" in last_message:
-            response = ("ProductB is our latest model with 3.6 GHz processing power, "
-                        "16GB memory, 512GB SSD storage, and 15 hours of battery life.")
-        elif "compatibility" in last_message.lower():
-            response = ("ProductAccessory was designed for ProductA, but it also "
-                        "has limited compatibility with ProductB.")
-        else:
-            response = ("Based on the context provided, I can answer your question "
-                        "about our products. Please provide more details.")
-        
-        return ChatResult(
-            generations=[ChatGeneration(message=AIMessage(content=response))]
-        )
-    
-    @property
-    def _llm_type(self):
-        return "mock-chat-llm"
-    
 def create_llm() -> BaseChatModel:
     """
     Create and return an LLM based on available providers.
-    Tries OpenAI first, then Ollama, then falls back to a mock LLM.
+    Tries OpenAI first, then Ollama. Raises an exception if neither is available.
     
     Returns:
         BaseChatModel: A LangChain compatible chat model
+        
+    Raises:
+        Exception: If neither OpenAI nor Ollama is available
     """
     # Try to use OpenAI's ChatGPT if available
     try:
@@ -197,15 +172,14 @@ def create_llm() -> BaseChatModel:
     try:
         ollama_llm = OllamaChatLLM()
         # Check if Ollama is working
-        ollama_llm._validate()
-        logger.info(f"Using Ollama with model {ollama_llm.model} for text generation")
-        return ollama_llm
+        if ollama_llm._validate():
+            logger.info(f"Using Ollama with model {ollama_llm.model} for text generation")
+            return ollama_llm
     except Exception as e:
         logger.warning(f"Could not initialize Ollama: {str(e)}")
     
-    # Fall back to mock LLM if neither is available
-    logger.info("Using mock LLM (for demonstration only)")
-    return MockChatLLM()
+    # If we get here, neither OpenAI nor Ollama is available
+    raise Exception("No LLM provider available. Please configure either OpenAI API key or start Ollama server.")
 
 class ProductKnowledgeManager:
     """
@@ -972,5 +946,12 @@ def run_product_replacement_demo():
 
 
 if __name__ == "__main__":
-    run_product_replacement_demo()
+    try:
+        run_product_replacement_demo()
+    except Exception as e:
+        logger.error(f"Error: {str(e)}")
+        print("\nERROR: This script requires either an OpenAI API key or a running Ollama server.")
+        print("- To use OpenAI, set the OPENAI_API_KEY environment variable.")
+        print("- To use Ollama, make sure the server is running on http://localhost:11434")
+        exit(1)
     
