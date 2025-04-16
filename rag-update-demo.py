@@ -28,8 +28,11 @@ python rag-update-demo.py [options]
 Options:
   --vector-db PATH, -v PATH   Specify custom vector database path (default: ./demo_vector_db)
   --clean, -c                 Clean existing vector database before running
+  --clean-only                Clean database and load only ProductA without replacement workflow
   --debug, -d                 Enable additional debug output
   --yes, -y                   Auto-confirm all prompts (non-interactive mode)
+  --hard-delete               Use hard deletion for replaced products (completely removes from database)
+  --removal MODE, -r MODE     Specify deletion mode (soft=retire but keep records, hard=completely delete)
   
 Note: If you encounter dimensionality errors with an existing vector database,
 use the --clean flag to start with a fresh database.
@@ -67,10 +70,10 @@ class LLMConfig:
     
     # Ollama configuration
     OLLAMA_BASE_URL = "http://localhost:11434"
-    OLLAMA_MODEL = "llama2"  # Default model
+    OLLAMA_MODEL = "llama3.2"  # Default model
     
     # OpenAI configuration
-    OPENAI_MODEL = "gpt-3.5-turbo"
+    OPENAI_MODEL = "gpt-4.1-nano"
 
 class OllamaChatLLM(BaseChatModel):
     """Ollama local LLM provider that implements the LangChain interface"""
@@ -573,24 +576,53 @@ class ProductKnowledgeManager:
         # Track the operation in product relationships
         retirement_date = datetime.now().isoformat()
         
-        # Update product status in relationship tracking
-        if product_id in self.product_relationships["products"]:
-            self.product_relationships["products"][product_id].update({
-                "status": "retired",
-                "retirement_date": retirement_date
-            })
-        
-        # Record replacement relationship if provided
-        if replacement_product_id:
-            self.product_relationships["replacements"][product_id] = replacement_product_id
+        if hard_delete:
+            # For hard delete, completely remove the product from relationships
+            if product_id in self.product_relationships["products"]:
+                del self.product_relationships["products"][product_id]
             
-            # Add to history
-            self.product_relationships["history"].append({
-                "date": retirement_date,
-                "action": "retirement",
-                "product_id": product_id,
-                "replacement_product_id": replacement_product_id
-            })
+            # Remove product from replacements map (both as key and as value)
+            if product_id in self.product_relationships["replacements"]:
+                del self.product_relationships["replacements"][product_id]
+                
+            # Also check if this product is a replacement for any other product
+            for old_product, replacement in list(self.product_relationships["replacements"].items()):
+                if replacement == product_id:
+                    del self.product_relationships["replacements"][old_product]
+            
+            # We still want to record the deletion in history for audit trail
+            if replacement_product_id:
+                self.product_relationships["history"].append({
+                    "date": retirement_date,
+                    "action": "hard_deletion",
+                    "product_id": product_id,
+                    "replacement_product_id": replacement_product_id
+                })
+            else:
+                self.product_relationships["history"].append({
+                    "date": retirement_date,
+                    "action": "hard_deletion",
+                    "product_id": product_id
+                })
+        else:
+            # For soft retirement, just update status
+            if product_id in self.product_relationships["products"]:
+                self.product_relationships["products"][product_id].update({
+                    "status": "retired",
+                    "retirement_date": retirement_date
+                })
+            
+            # Record replacement relationship if provided
+            if replacement_product_id:
+                self.product_relationships["replacements"][product_id] = replacement_product_id
+                
+                # Add to history
+                self.product_relationships["history"].append({
+                    "date": retirement_date,
+                    "action": "retirement",
+                    "product_id": product_id,
+                    "replacement_product_id": replacement_product_id
+                })
         
         # Save relationship changes
         self._save_product_relationships()
@@ -829,7 +861,7 @@ class ProductAwareRAG:
         {question}
         """)
         
-        # Product-aware prompt that handles retired products
+        # Product-aware prompt that handles retired and deleted products
         self.product_aware_prompt = ChatPromptTemplate.from_template("""
         You are a product information assistant. Answer the question based on the context provided.
         
@@ -844,7 +876,11 @@ class ProductAwareRAG:
         Given the context information and the product status information, answer the following question:
         {question}
         
-        If the question is about a retired product, acknowledge this and direct the user to the replacement product.
+        RESPONSE GUIDELINES:
+        1. If the question is about a retired product, acknowledge this and direct the user to the replacement product.
+        2. If the question is about a hard-deleted product, inform the user that this product has been discontinued, 
+           no information is available, and direct them to the replacement product if one exists.
+        3. If the context does not provide information on the product (e.g., due to hard deletion), do not make up information.
         """)
     
     def _build_rag_chain(self) -> None:
@@ -888,6 +924,8 @@ class ProductAwareRAG:
         # For this example, we'll use a simplified approach with the product relationships
         
         status_info = []
+        
+        # Check for active or soft-retired products first
         for product_id in self.knowledge_manager.product_relationships["products"]:
             # Simple check if product is mentioned in query
             if product_id.lower() in query.lower():
@@ -903,6 +941,27 @@ class ProductAwareRAG:
                         )
                     else:
                         status_info.append(f"Product {product_id} has been retired.")
+        
+        # Now check for hard-deleted products in the history
+        for history_entry in self.knowledge_manager.product_relationships["history"]:
+            if history_entry.get("action") == "hard_deletion":
+                product_id = history_entry.get("product_id")
+                
+                # Check if this hard-deleted product is mentioned in the query
+                if product_id and product_id.lower() in query.lower():
+                    # See if there's a replacement
+                    replacement_id = history_entry.get("replacement_product_id")
+                    
+                    if replacement_id:
+                        status_info.append(
+                            f"Product {product_id} has been discontinued and completely replaced by {replacement_id}. "
+                            f"No information about {product_id} is available."
+                        )
+                    else:
+                        status_info.append(
+                            f"Product {product_id} has been discontinued and removed from our systems. "
+                            f"No information about {product_id} is available."
+                        )
         
         if not status_info:
             return "All products mentioned are currently active."
@@ -956,14 +1015,33 @@ def get_user_confirmation(prompt, default="y"):
         if choice in valid_responses:
             return valid_responses[choice]
         print("Please respond with 'yes' or 'no' (or 'y' or 'n').")
+        
+def get_removal_option():
+    """Get user preference for how to handle the replaced product."""
+    print("\nHow would you like to handle the replaced product?")
+    print("1. Soft retirement (mark as retired but keep in database for reference - DEFAULT)")
+    print("2. Hard deletion (completely remove product and all references from database)")
+    print("3. Cancel (do not proceed with replacement)")
+    
+    while True:
+        choice = input("Choose an option [1/2/3] (default: 1): ").strip()
+        if choice == "" or choice == "1":
+            return "soft"
+        elif choice == "2":
+            return "hard"
+        elif choice == "3":
+            return "cancel"
+        else:
+            print("Please enter 1, 2, or 3.")
 
-def run_product_replacement_demo(vector_db_path="./demo_vector_db", auto_confirm=False):
+def run_product_replacement_demo(vector_db_path="./demo_vector_db", auto_confirm=False, hard_delete=None):
     """
     Run a demonstration of the product replacement workflow.
     
     Args:
         vector_db_path: Path to the vector database directory
         auto_confirm: Skip user confirmation prompts if True
+        hard_delete: If specified, uses this deletion mode instead of asking the user
     """
     print("RAG Product Replacement Workflow Demo")
     print("=====================================")
@@ -1088,27 +1166,62 @@ def run_product_replacement_demo(vector_db_path="./demo_vector_db", auto_confirm
     print("\n4. Product replacement workflow")
     print("\nYou are about to replace ProductA with ProductB in the knowledge base.")
     print("This will:")
-    print("- Mark ProductA as retired in the database")
+    print("- Change the status of ProductA in the database")
     print("- Add ProductB as its official replacement")
     print("- Add the new ProductB documentation to the knowledge base")
     print("- Update cross-references from other products")
     
     # Ask for user confirmation unless auto_confirm is set
     if auto_confirm or get_user_confirmation("Do you want to proceed with the replacement?"):
-        print("\nExecuting product replacement workflow...")
+        # Determine the removal option
+        if hard_delete is not None:
+            # Use the specified hard_delete value
+            removal_option = "hard" if hard_delete else "soft"
+            print(f"Using {'hard deletion' if hard_delete else 'soft retirement'} as specified")
+        elif auto_confirm:
+            # Default to soft delete in auto-confirm mode
+            removal_option = "soft"
+            print("Auto-confirming with soft retirement (default)")
+        else:
+            # Interactive mode: ask the user
+            removal_option = get_removal_option()
+        
+        # Define the product IDs for clarity
+        old_product_id = "ProductA"
+        new_product_id = "ProductB"
+        
+        # Check if user chose to cancel
+        if removal_option == "cancel":
+            print("\nProduct replacement cancelled.")
+            print(f"{old_product_id} will remain active in the knowledge base.")
+            return
+            
+        # Determine hard_delete based on selected removal option
+        hard_delete = removal_option == "hard"
+        
+        # Display what's happening
+        if hard_delete:
+            print("\nExecuting product replacement workflow with HARD DELETION...")
+            print(f"All references to {old_product_id} will be completely removed from the database.")
+            print(f"The product will not appear in search results and queries about {old_product_id} will indicate it's discontinued.")
+        else:
+            print("\nExecuting product replacement workflow with SOFT RETIREMENT...")
+            print(f"{old_product_id} will be marked as retired but remain in the database for historical reference.")
+            print(f"Queries about {old_product_id} will indicate it's retired and suggest the replacement product.")
         
         result = manager.replace_product(
-            old_product_id="ProductA",
-            new_product_id="ProductB",
+            old_product_id=old_product_id,
+            new_product_id=new_product_id,
             new_product_docs=["./demo_docs/productB_specs.txt", "./demo_docs/productB_manual.txt"],
             new_product_metadata={"version": "2025", "category": "electronic"},
-            hard_delete=False  # Use soft deletion to maintain historical context
+            hard_delete=hard_delete
         )
         
         print(f"Replacement result: {json.dumps(result, indent=2)}")
     else:
+        old_product_id = "ProductA"  # Define here since we don't define it in the main block
         print("\nProduct replacement skipped.")
-        print("ProductA will remain active in the knowledge base.")
+        print(f"{old_product_id} will remain active in the knowledge base.")
     
     # Step 5: Set up the RAG system and run some queries
     print("\n5. Setting up the RAG system and running queries")
@@ -1146,6 +1259,109 @@ def run_product_replacement_demo(vector_db_path="./demo_vector_db", auto_confirm
     
     print("\nDemo complete!")
 
+
+def load_product_a_only(vector_db_path="./demo_vector_db"):
+    """
+    Initialize the database with only ProductA information for testing.
+    This is useful when you want to set up a clean environment with just
+    the original product before testing replacement workflows.
+    
+    Args:
+        vector_db_path: Path to the vector database directory
+    """
+    print("RAG Product A Only Initialization")
+    print("=================================")
+    print(f"Using vector database path: {vector_db_path}")
+    
+    # Initialize the knowledge manager
+    manager = ProductKnowledgeManager(vector_db_path=vector_db_path)
+    
+    # Create sample product documents
+    os.makedirs("./demo_docs", exist_ok=True)
+    
+    print("\nCreating ProductA documentation...")
+    with open("./demo_docs/productA_specs.txt", "w") as f:
+        f.write("""
+        # ProductA Specifications
+        
+        Model: ProductA-2023
+        Processing power: 2.4 GHz
+        Memory: 8GB
+        Storage: 256GB SSD
+        Battery life: 10 hours
+        Weight: 1.8 kg
+        
+        ProductA is compatible with all standard accessories and can be upgraded
+        to the latest software version.
+        """)
+    
+    with open("./demo_docs/productA_manual.txt", "w") as f:
+        f.write("""
+        # ProductA User Manual
+        
+        Thank you for purchasing ProductA!
+        
+        ## Setup Instructions
+        
+        1. Unbox the ProductA
+        2. Connect to power
+        3. Press the power button for 3 seconds
+        4. Follow on-screen instructions
+        
+        ## Troubleshooting
+        
+        If ProductA does not power on, check the power connection and ensure
+        the battery is charged.
+        """)
+    
+    # Add accessory documentation
+    print("Creating ProductAccessory documentation...")
+    with open("./demo_docs/accessory_specs.txt", "w") as f:
+        f.write("""
+        # ProductAccessory Specifications
+        
+        This accessory is designed to work with ProductA.
+        
+        It enhances the functionality of ProductA by adding additional ports
+        and extending battery life by up to 5 hours.
+        
+        Only compatible with ProductA and similar models.
+        """)
+    
+    # Add ProductA to vector database
+    print("\nAdding ProductA to vector database...")
+    docs_added = manager.add_product_knowledge(
+        product_id="ProductA",
+        document_paths=["./demo_docs/productA_specs.txt", "./demo_docs/productA_manual.txt"],
+        metadata={"version": "2023", "category": "electronic"}
+    )
+    print(f"Added {docs_added} document chunks for ProductA")
+    
+    # Add ProductAccessory to vector database
+    print("\nAdding ProductAccessory to vector database...")
+    accessory_docs = manager.add_product_knowledge(
+        product_id="ProductAccessory",
+        document_paths=["./demo_docs/accessory_specs.txt"],
+        metadata={"version": "1.0", "category": "accessory"}
+    )
+    print(f"Added {accessory_docs} document chunks for ProductAccessory")
+    
+    # Create a simple RAG system and test it
+    print("\nInitializing RAG system...")
+    rag = ProductAwareRAG(manager)
+    print(f"Using {rag.llm_name} for text generation")
+    
+    # Test a query
+    print("\nTesting query about ProductA:")
+    query = "What are the specifications of ProductA?"
+    print(f"Q: {query}")
+    answer = rag.query(query)
+    print(f"A: {answer}")
+    
+    print("\nProduct initialization complete. Database contains:")
+    print("- ProductA (primary product)")
+    print("- ProductAccessory (compatible accessory)")
+    print("\nThe database is now ready for testing the product replacement workflow.")
 
 def print_debug_info():
     """Print debugging information to help diagnose issues."""
@@ -1189,10 +1405,16 @@ def parse_arguments():
                       help="Path to vector database (default: ./demo_vector_db)")
     parser.add_argument("--clean", "-c", action="store_true",
                       help="Clean existing vector database before running")
+    parser.add_argument("--clean-only", action="store_true", 
+                      help="Clean database and load only ProductA without replacement workflow")
     parser.add_argument("--debug", "-d", action="store_true",
                       help="Enable additional debug output")
     parser.add_argument("--yes", "-y", action="store_true",
                       help="Auto-confirm all prompts (non-interactive mode)")
+    parser.add_argument("--hard-delete", action="store_true",
+                      help="Use hard deletion for replaced products (completely removes all traces from database)")
+    parser.add_argument("--removal", "-r", choices=["soft", "hard"],
+                      help="Specify deletion mode (soft=retire but keep records, hard=completely delete)")
     
     return parser.parse_args()
 
@@ -1206,8 +1428,8 @@ if __name__ == "__main__":
             logging.getLogger().setLevel(logging.DEBUG)
             logging.debug("Debug logging enabled")
         
-        # Clean vector database if requested
-        if args.clean:
+        # Handle clean database requests
+        if args.clean or args.clean_only:
             import shutil
             if os.path.exists(args.vector_db):
                 print(f"Cleaning vector database at {args.vector_db}")
@@ -1217,8 +1439,28 @@ if __name__ == "__main__":
         # Print debug info at the start
         print_debug_info()
         
-        # Run the demo with the specified vector database path and auto-confirm if requested
-        run_product_replacement_demo(vector_db_path=args.vector_db, auto_confirm=args.yes)
+        # If clean_only flag is set, just initialize ProductA and exit
+        if args.clean_only:
+            load_product_a_only(vector_db_path=args.vector_db)
+        else:
+            # Normal demo flow
+            # Determine auto deletion mode
+            hard_delete = False
+            if args.hard_delete:
+                hard_delete = True
+                logger.info("Using hard deletion mode from command line flag")
+            elif args.removal == "hard":
+                hard_delete = True
+                logger.info("Using hard deletion mode from removal option")
+            elif args.removal == "soft":
+                logger.info("Using soft retirement mode from removal option")
+                
+            # Run the demo with the specified parameters
+            run_product_replacement_demo(
+                vector_db_path=args.vector_db, 
+                auto_confirm=args.yes,
+                hard_delete=hard_delete if (args.hard_delete or args.removal) else None
+            )
     except Exception as e:
         logger.error(f"Error: {str(e)}")
         
