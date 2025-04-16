@@ -15,3 +15,6 @@ build/
 .env
 .venv/
 venv/
+
+# Claude Code files
+CLAUDE.md

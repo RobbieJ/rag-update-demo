@@ -8,20 +8,27 @@ in a RAG (Retrieval Augmented Generation) system. It shows how to:
 2. Update the vector database to reflect product retirement
 3. Add new content for the replacement product
 4. Implement retrieval logic that handles queries about both products
+5. Support multiple LLM providers (OpenAI and local Ollama models)
 
 Requirements:
 - langchain-core
 - langchain-community
 - langchain-text-splitters
 - chromadb (or other vector store)
+- requests (for Ollama API)
 
-Optional dependencies (will use mock implementations if not available):
-- langchain-openai and valid OPENAI_API_KEY (for production-quality embeddings and LLM)
+Optional dependencies:
+- langchain-openai and valid OPENAI_API_KEY (for OpenAI LLM and embeddings)
+- Ollama running locally on port 11434 (for local LLM inference)
+
+If neither OpenAI nor Ollama are available, the script will fall back to mock implementations
+for both embeddings and LLM responses for demonstration purposes.
 """
 
 import os
 import json
 import logging
+import requests
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -37,10 +44,168 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.language_models import BaseChatModel
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.messages import BaseMessage, AIMessage
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+class LLMConfig:
+    """Configuration for LLM providers"""
+    
+    # Ollama configuration
+    OLLAMA_BASE_URL = "http://localhost:11434"
+    OLLAMA_MODEL = "llama2"  # Default model
+    
+    # OpenAI configuration
+    OPENAI_MODEL = "gpt-3.5-turbo"
+
+class OllamaChatLLM(BaseChatModel):
+    """Ollama local LLM provider that implements the LangChain interface"""
+    
+    def __init__(self, model: str = LLMConfig.OLLAMA_MODEL, base_url: str = LLMConfig.OLLAMA_BASE_URL):
+        """Initialize the Ollama chat model."""
+        super().__init__()
+        self.name = "Ollama"
+        self.model = model
+        self.base_url = base_url
+        self._validate()
+        
+    def _validate(self):
+        """Validate Ollama server connection"""
+        try:
+            # Check if Ollama server is running and model is available
+            response = requests.get(f"{self.base_url}/api/tags")
+            
+            if response.status_code != 200:
+                logger.warning(f"Ollama server returned status code {response.status_code}")
+                return False
+            
+            # Check if our model is available
+            available_models = response.json().get("models", [])
+            model_names = [model.get("name") for model in available_models]
+            
+            if not model_names:
+                logger.warning("No models found on Ollama server")
+                return False
+            
+            if self.model not in model_names:
+                logger.warning(f"Model {self.model} not found. Available models: {', '.join(model_names)}")
+                logger.info(f"Using {model_names[0]} instead.")
+                self.model = model_names[0]
+            
+            logger.info(f"Ollama server validated successfully with model: {self.model}")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Error connecting to Ollama server: {str(e)}")
+            logger.info("Make sure Ollama is running locally on port 11434")
+            return False
+    
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        """Generate a response using Ollama API"""
+        try:
+            # Extract the system message if present
+            system_message = ""
+            for message in messages:
+                if message.type == "system":
+                    system_message = message.content
+                    break
+            
+            # Get the user's message (last one if multiple)
+            last_message = messages[-1].content
+                        
+            payload = {
+                "model": self.model,
+                "prompt": last_message,
+                "system": system_message or "You are a helpful assistant.",
+                "stream": False
+            }
+            
+            response = requests.post(f"{self.base_url}/api/generate", json=payload)
+            
+            if response.status_code != 200:
+                raise Exception(f"Ollama server returned status code {response.status_code}")
+                
+            result = response.json()
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(content=result.get("response", "").strip()))]
+            )
+            
+        except Exception as e:
+            logger.error(f"Ollama API error: {str(e)}")
+            # Return a minimally valid result with an error message
+            return ChatResult(
+                generations=[ChatGeneration(message=AIMessage(
+                    content=f"Error generating response from Ollama: {str(e)}"
+                ))]
+            )
+    
+    @property
+    def _llm_type(self):
+        """Return the LLM type identifier"""
+        return "ollama-chat-llm"
+
+class MockChatLLM(BaseChatModel):
+    """Simple mock LLM for demonstration purposes when neither OpenAI nor Ollama is available."""
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        # Simple template-based response
+        last_message = messages[-1].content
+        
+        if "ProductA" in last_message:
+            response = ("ProductA has been retired and replaced by ProductB. "
+                        "ProductB offers improved performance with 3.6 GHz processing "
+                        "power, 16GB memory, and 15 hours of battery life.")
+        elif "ProductB" in last_message:
+            response = ("ProductB is our latest model with 3.6 GHz processing power, "
+                        "16GB memory, 512GB SSD storage, and 15 hours of battery life.")
+        elif "compatibility" in last_message.lower():
+            response = ("ProductAccessory was designed for ProductA, but it also "
+                        "has limited compatibility with ProductB.")
+        else:
+            response = ("Based on the context provided, I can answer your question "
+                        "about our products. Please provide more details.")
+        
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content=response))]
+        )
+    
+    @property
+    def _llm_type(self):
+        return "mock-chat-llm"
+    
+def create_llm() -> BaseChatModel:
+    """
+    Create and return an LLM based on available providers.
+    Tries OpenAI first, then Ollama, then falls back to a mock LLM.
+    
+    Returns:
+        BaseChatModel: A LangChain compatible chat model
+    """
+    # Try to use OpenAI's ChatGPT if available
+    try:
+        if "OPENAI_API_KEY" in os.environ:
+            llm = ChatOpenAI(model=LLMConfig.OPENAI_MODEL, temperature=0)
+            logger.info("Using OpenAI for text generation")
+            return llm
+    except Exception as e:
+        logger.warning(f"Could not initialize OpenAI: {str(e)}")
+    
+    # Try to use Ollama if available
+    try:
+        ollama_llm = OllamaChatLLM()
+        # Check if Ollama is working
+        ollama_llm._validate()
+        logger.info(f"Using Ollama with model {ollama_llm.model} for text generation")
+        return ollama_llm
+    except Exception as e:
+        logger.warning(f"Could not initialize Ollama: {str(e)}")
+    
+    # Fall back to mock LLM if neither is available
+    logger.info("Using mock LLM (for demonstration only)")
+    return MockChatLLM()
 
 class ProductKnowledgeManager:
     """
@@ -477,66 +642,29 @@ class ProductAwareRAG:
     def __init__(
         self,
         knowledge_manager: ProductKnowledgeManager,
-        llm: Optional[Any] = None
+        llm: Optional[BaseChatModel] = None
     ):
         """
         Initialize the product-aware RAG system.
         
         Args:
             knowledge_manager: The product knowledge manager
-            llm: The LLM to use for generation (defaults to a simple mock LLM if OpenAI not available)
+            llm: The LLM to use for generation (defaults to using create_llm() to select the best available provider)
         """
         self.knowledge_manager = knowledge_manager
         
-        # Try to use OpenAI's ChatGPT if available, otherwise use a mock LLM
-        if llm is not None:
-            self.llm = llm
+        # Use the provided LLM or create one using our factory function
+        self.llm = llm if llm is not None else create_llm()
+        
+        # Get the LLM name for display purposes
+        if hasattr(self.llm, 'name'):
+            self.llm_name = self.llm.name
+        elif hasattr(self.llm, 'model_name'):
+            self.llm_name = f"OpenAI ({self.llm.model_name})"
         else:
-            try:
-                import os
-                if "OPENAI_API_KEY" in os.environ:
-                    from langchain_openai import ChatOpenAI
-                    self.llm = ChatOpenAI(temperature=0)
-                    print("Using OpenAI for text generation")
-                else:
-                    raise ValueError("No OpenAI API key found")
-            except (ImportError, ValueError):
-                # Create a simple mock LLM for demonstration
-                from langchain_core.language_models import BaseChatModel
-                from langchain_core.outputs import ChatGeneration, ChatResult
-                from langchain_core.messages import BaseMessage, AIMessage
-                
-                print("Using mock LLM (for demonstration only)")
-                
-                class MockChatLLM(BaseChatModel):
-                    """Simple mock LLM for demonstration purposes."""
-                    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
-                        # Simple template-based response
-                        last_message = messages[-1].content
-                        
-                        if "ProductA" in last_message:
-                            response = ("ProductA has been retired and replaced by ProductB. "
-                                       "ProductB offers improved performance with 3.6 GHz processing "
-                                       "power, 16GB memory, and 15 hours of battery life.")
-                        elif "ProductB" in last_message:
-                            response = ("ProductB is our latest model with 3.6 GHz processing power, "
-                                       "16GB memory, 512GB SSD storage, and 15 hours of battery life.")
-                        elif "compatibility" in last_message.lower():
-                            response = ("ProductAccessory was designed for ProductA, but it also "
-                                       "has limited compatibility with ProductB.")
-                        else:
-                            response = ("Based on the context provided, I can answer your question "
-                                       "about our products. Please provide more details.")
-                        
-                        return ChatResult(
-                            generations=[ChatGeneration(message=AIMessage(content=response))]
-                        )
-                    
-                    @property
-                    def _llm_type(self):
-                        return "mock-chat-llm"
-                
-                self.llm = MockChatLLM()
+            self.llm_name = self.llm._llm_type
+            
+        logger.info(f"ProductAwareRAG initialized with LLM: {self.llm_name}")
         
         # Initialize prompt templates
         self._init_prompts()
@@ -810,6 +938,7 @@ def run_product_replacement_demo():
     print("\n5. Setting up the RAG system and running queries")
     
     rag = ProductAwareRAG(manager)
+    print(f"\nUsing {rag.llm_name} for text generation")
     
     # Test query about the retired product
     print("\nQuery about the retired product:")
